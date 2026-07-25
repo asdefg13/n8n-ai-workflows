@@ -1,0 +1,15 @@
+# Secrets — only .env.example belongs in git
+.env
+.env.*
+!.env.example
+
+# Local n8n data
+.n8n/
+*.sqlite
+*.sqlite3
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
+__pycache__/
