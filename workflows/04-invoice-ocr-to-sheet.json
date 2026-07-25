@@ -1,0 +1,361 @@
+{
+  "name": "04 · Invoice OCR → Google Sheets",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## 04 · Invoice OCR → spreadsheet\n**Telegram photo/PDF → download → GPT vision → validate → Google Sheets**\n\nSend a photo of a receipt to the bot and the line lands in the sheet.\n\nLow-confidence or zero-total extractions never reach the sheet — the\nuser is asked for a better photo instead. Silent bad data is worse\nthan no data.",
+        "height": 300,
+        "width": 560,
+        "color": 7
+      },
+      "id": "00000004-0000-4000-8000-000000000000",
+      "name": "Overview",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -300,
+        -240
+      ]
+    },
+    {
+      "parameters": {
+        "updates": [
+          "message"
+        ],
+        "additionalFields": {
+          "download": false
+        }
+      },
+      "id": "00000004-0000-4000-8000-000000000001",
+      "name": "Invoice Received",
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        -280,
+        160
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "Telegram account"
+        }
+      },
+      "webhookId": "00000004-0000-4000-8000-000000000001"
+    },
+    {
+      "parameters": {
+        "resource": "file",
+        "fileId": "={{ $json.message.document?.file_id || $json.message.photo?.[$json.message.photo.length - 1]?.file_id }}",
+        "download": true
+      },
+      "id": "00000004-0000-4000-8000-000000000002",
+      "name": "Download File",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        -60,
+        160
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "Telegram account"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "jsCode": "// The vision endpoint wants a data URL, so turn the downloaded binary into\n// base64 here rather than relying on version-specific $binary expressions.\nconst items = $input.all();\nconst out = [];\n\nfor (let index = 0; index < items.length; index++) {\n  const meta = items[index].binary?.data;\n  if (!meta) {\n    throw new Error('No binary property \"data\" - check the Telegram file node.');\n  }\n\n  const buffer = await this.helpers.getBinaryDataBuffer(index, 'data');\n  out.push({\n    json: {\n      chat_id: $('Invoice Received').first().json.message?.chat?.id ?? '',\n      file_name: meta.fileName ?? 'invoice',\n      mime_type: meta.mimeType ?? 'image/jpeg',\n      base64: buffer.toString('base64'),\n    },\n  });\n}\n\nreturn out;"
+      },
+      "id": "00000004-0000-4000-8000-000000000003",
+      "name": "Image to Base64",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        160,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"gpt-4o-mini\",\n  \"temperature\": 0,\n  \"max_tokens\": 800,\n  \"response_format\": { \"type\": \"json_object\" },\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You extract structured data from invoices and receipts. Reply with JSON only, using exactly these keys: vendor, invoice_number, issue_date (YYYY-MM-DD or empty), due_date (YYYY-MM-DD or empty), currency (ISO 4217), subtotal (number), tax (number), total (number), category (software|hardware|travel|services|utilities|other), confidence (0-1). Use 0 for any amount you cannot read and lower the confidence accordingly. Never guess a total from partial digits.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        { \"type\": \"text\", \"text\": \"Extract the invoice data.\" },\n        { \"type\": \"image_url\", \"image_url\": { \"url\": \"data:{{ $json.mime_type }};base64,{{ $json.base64 }}\" } }\n      ]\n    }\n  ]\n}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "00000004-0000-4000-8000-000000000004",
+      "name": "Extract Invoice Data",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        380,
+        160
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "OpenAI Header Auth"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "jsCode": "const source = $('Image to Base64').first().json;\nconst raw = $json.choices?.[0]?.message?.content ?? '{}';\n\nlet invoice;\ntry {\n  invoice = JSON.parse(raw);\n} catch (error) {\n  invoice = { confidence: 0, total: 0 };\n}\n\nconst number = (value) => {\n  const parsed = Number(String(value ?? '').replace(',', '.').replace(/[^0-9.\\-]/g, ''));\n  return Number.isFinite(parsed) ? parsed : 0;\n};\n\nreturn [\n  {\n    json: {\n      chat_id: source.chat_id,\n      file_name: source.file_name,\n      vendor: invoice.vendor ?? '',\n      invoice_number: invoice.invoice_number ?? '',\n      issue_date: invoice.issue_date ?? '',\n      due_date: invoice.due_date ?? '',\n      currency: (invoice.currency ?? '').toUpperCase(),\n      subtotal: number(invoice.subtotal),\n      tax: number(invoice.tax),\n      total: number(invoice.total),\n      category: invoice.category ?? 'other',\n      confidence: Number(invoice.confidence ?? 0),\n      extracted_at: new Date().toISOString(),\n    },\n  },\n];"
+      },
+      "id": "00000004-0000-4000-8000-000000000005",
+      "name": "Normalize Invoice",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        600,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.total }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            },
+            {
+              "id": "c2",
+              "leftValue": "={{ $json.confidence }}",
+              "rightValue": 0.6,
+              "operator": {
+                "type": "number",
+                "operation": "gte"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "00000004-0000-4000-8000-000000000006",
+      "name": "Extraction Trustworthy?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        820,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "REPLACE_WITH_GOOGLE_SHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Expenses",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Extracted At": "={{ $json.extracted_at }}",
+            "Vendor": "={{ $json.vendor }}",
+            "Invoice Number": "={{ $json.invoice_number }}",
+            "Issue Date": "={{ $json.issue_date }}",
+            "Due Date": "={{ $json.due_date }}",
+            "Currency": "={{ $json.currency }}",
+            "Subtotal": "={{ $json.subtotal }}",
+            "Tax": "={{ $json.tax }}",
+            "Total": "={{ $json.total }}",
+            "Category": "={{ $json.category }}",
+            "Confidence": "={{ $json.confidence }}"
+          },
+          "matchingColumns": [],
+          "schema": []
+        },
+        "options": {}
+      },
+      "id": "00000004-0000-4000-8000-000000000007",
+      "name": "Append to Expenses",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        1060,
+        60
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "Google Sheets account"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.chat_id }}",
+        "text": "=✅ <b>{{ $json.vendor }}</b>\n{{ $json.total }} {{ $json.currency }} · {{ $json.category }}\nInvoice {{ $json.invoice_number || '—' }} · due {{ $json.due_date || '—' }}",
+        "additionalFields": {
+          "parse_mode": "HTML"
+        }
+      },
+      "id": "00000004-0000-4000-8000-000000000008",
+      "name": "Confirm to User",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1280,
+        60
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "Telegram account"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.chat_id }}",
+        "text": "=⚠️ I could not read that invoice reliably (confidence {{ $json.confidence }}).\nSend a sharper, well-lit photo with the total visible.",
+        "additionalFields": {
+          "parse_mode": "HTML"
+        }
+      },
+      "id": "00000004-0000-4000-8000-000000000009",
+      "name": "Ask for a Better Photo",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1060,
+        280
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "Telegram account"
+        }
+      },
+      "onError": "continueRegularOutput"
+    }
+  ],
+  "connections": {
+    "Invoice Received": {
+      "main": [
+        [
+          {
+            "node": "Download File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download File": {
+      "main": [
+        [
+          {
+            "node": "Image to Base64",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Image to Base64": {
+      "main": [
+        [
+          {
+            "node": "Extract Invoice Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Invoice Data": {
+      "main": [
+        [
+          {
+            "node": "Normalize Invoice",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Invoice": {
+      "main": [
+        [
+          {
+            "node": "Extraction Trustworthy?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extraction Trustworthy?": {
+      "main": [
+        [
+          {
+            "node": "Append to Expenses",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Ask for a Better Photo",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Append to Expenses": {
+      "main": [
+        [
+          {
+            "node": "Confirm to User",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true
+  },
+  "pinData": {},
+  "tags": []
+}
