@@ -1,0 +1,23 @@
+name: Validate workflows
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  validate:
+    name: JSON + secret scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Validate every workflow export
+        # Standard library only — nothing to install.
+        run: python scripts/validate_workflows.py
