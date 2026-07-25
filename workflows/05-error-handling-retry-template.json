@@ -30,7 +30,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// Runs when ANY workflow that points its \"Error Workflow\" setting here fails.\nconst error = $json.execution?.error ?? $json.trigger?.error ?? {};\n\nreturn [\n  {\n    json: {\n      workflow_name: $json.workflow?.name ?? 'unknown',\n      workflow_id: $json.workflow?.id ?? '',\n      execution_id: $json.execution?.id ?? '',\n      execution_url: $json.execution?.url ?? '',\n      failed_node: error.node?.name ?? 'unknown',\n      message: error.message ?? 'no message',\n      stack: String(error.stack ?? '').slice(0, 1000),\n      failed_at: $json.execution?.lastNodeExecuted\n        ? new Date().toISOString()\n        : new Date().toISOString(),\n    },\n  },\n];"
+        "jsCode": "// Runs when ANY workflow that points its \"Error Workflow\" setting here fails.\nconst error = $json.execution?.error ?? $json.trigger?.error ?? {};\n\nreturn [\n  {\n    json: {\n      workflow_name: $json.workflow?.name ?? 'unknown',\n      workflow_id: $json.workflow?.id ?? '',\n      execution_id: $json.execution?.id ?? '',\n      execution_url: $json.execution?.url ?? '',\n      failed_node: error.node?.name ?? 'unknown',\n      message: error.message ?? 'no message',\n      stack: String(error.stack ?? '').slice(0, 1000),\n      last_node: $json.execution?.lastNodeExecuted ?? '',\n      failed_at: new Date().toISOString(),\n    },\n  },\n];"
       },
       "id": "00000005-0000-4000-8000-000000000002",
       "name": "Format Error",
