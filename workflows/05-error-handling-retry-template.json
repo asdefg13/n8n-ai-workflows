@@ -1,0 +1,358 @@
+{
+  "name": "05 · Error Handling & Retry Template",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## 05 · Error handling & retry template\nTwo independent patterns you can paste into any workflow.\n\n**A — retry ladder (bottom row).** The HTTP node retries 3× fast at node\nlevel (`retryOnFail`). If it still fails, the error output feeds an outer\nloop: wait 1 minute, try again, give up after 3 outer attempts and\nescalate to a human.\n\n**B — Error Trigger (top row).** Point any workflow's *Settings → Error\nWorkflow* at this one and every unhandled failure lands in one sheet and\none Telegram alert.",
+        "height": 360,
+        "width": 620,
+        "color": 3
+      },
+      "id": "00000005-0000-4000-8000-000000000000",
+      "name": "Overview",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -320,
+        -300
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "00000005-0000-4000-8000-000000000001",
+      "name": "Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        -300,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Runs when ANY workflow that points its \"Error Workflow\" setting here fails.\nconst error = $json.execution?.error ?? $json.trigger?.error ?? {};\n\nreturn [\n  {\n    json: {\n      workflow_name: $json.workflow?.name ?? 'unknown',\n      workflow_id: $json.workflow?.id ?? '',\n      execution_id: $json.execution?.id ?? '',\n      execution_url: $json.execution?.url ?? '',\n      failed_node: error.node?.name ?? 'unknown',\n      message: error.message ?? 'no message',\n      stack: String(error.stack ?? '').slice(0, 1000),\n      failed_at: $json.execution?.lastNodeExecuted\n        ? new Date().toISOString()\n        : new Date().toISOString(),\n    },\n  },\n];"
+      },
+      "id": "00000005-0000-4000-8000-000000000002",
+      "name": "Format Error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -80,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "REPLACE_WITH_GOOGLE_SHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Failures",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Failed At": "={{ $json.failed_at }}",
+            "Workflow": "={{ $json.workflow_name }}",
+            "Node": "={{ $json.failed_node }}",
+            "Message": "={{ $json.message }}",
+            "Execution": "={{ $json.execution_url }}"
+          },
+          "matchingColumns": [],
+          "schema": []
+        },
+        "options": {}
+      },
+      "id": "00000005-0000-4000-8000-000000000003",
+      "name": "Log Failure to Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        160,
+        120
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "Google Sheets account"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "chatId": "REPLACE_WITH_TELEGRAM_CHAT_ID",
+        "text": "=💥 <b>Workflow failed</b>\n\n<b>{{ $json.workflow_name }}</b>\nNode: <code>{{ $json.failed_node }}</code>\n\n{{ $json.message }}\n\n{{ $json.execution_url }}",
+        "additionalFields": {
+          "parse_mode": "HTML",
+          "disable_web_page_preview": true
+        }
+      },
+      "id": "00000005-0000-4000-8000-000000000004",
+      "name": "Escalate to Telegram",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        400,
+        120
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "id": "00000005-0000-4000-8000-000000000005",
+      "name": "Run Retry Demo",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -300,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://httpbin.org/status/200,500,503",
+        "options": {
+          "timeout": 15000,
+          "response": {
+            "response": {
+              "neverError": false
+            }
+          }
+        }
+      },
+      "id": "00000005-0000-4000-8000-000000000006",
+      "name": "Call Unreliable API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -80,
+        420
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueErrorOutput",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// The call succeeded: clear the outer-loop counter so the next execution\n// starts from zero. Same 'global' scope as Count Attempt.\nconst state = $getWorkflowStaticData('global');\nstate.attempts = 0;\nreturn $input.all();"
+      },
+      "id": "00000005-0000-4000-8000-000000000007",
+      "name": "Reset Attempt Counter",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        180,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Node-level retries (3 fast attempts) have already been exhausted at this\n// point. This is the slow outer loop: wait, then try the whole call again.\n// Scope is 'global' so the reset node can clear the same counter.\nconst state = $getWorkflowStaticData('global');\nstate.attempts = (state.attempts ?? 0) + 1;\n\nconst error = $json.error ?? {};\n\nreturn [\n  {\n    json: {\n      attempt: state.attempts,\n      max_attempts: 3,\n      give_up: state.attempts >= 3,\n      error_message: error.message ?? String($json.message ?? 'unknown error'),\n      status_code: error.httpCode ?? $json.statusCode ?? null,\n      failed_at: new Date().toISOString(),\n    },\n  },\n];"
+      },
+      "id": "00000005-0000-4000-8000-000000000008",
+      "name": "Count Attempt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        180,
+        520
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.give_up }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "false",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "00000005-0000-4000-8000-000000000009",
+      "name": "Retry Budget Left?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        400,
+        520
+      ]
+    },
+    {
+      "parameters": {
+        "amount": 1,
+        "unit": "minutes"
+      },
+      "id": "00000005-0000-4000-8000-000000000010",
+      "name": "Wait 1 Minute",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        620,
+        440
+      ],
+      "webhookId": "00000005-0000-4000-8000-000000000001"
+    },
+    {
+      "parameters": {
+        "chatId": "REPLACE_WITH_TELEGRAM_CHAT_ID",
+        "text": "=🛑 <b>Gave up after {{ $json.attempt }} attempts</b>\n\n<code>{{ $json.error_message }}</code>\nHTTP {{ $json.status_code || '—' }} · {{ $json.failed_at }}",
+        "additionalFields": {
+          "parse_mode": "HTML"
+        }
+      },
+      "id": "00000005-0000-4000-8000-000000000011",
+      "name": "Give Up and Alert",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        620,
+        620
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "Telegram account"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Error Trigger": {
+      "main": [
+        [
+          {
+            "node": "Format Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Error": {
+      "main": [
+        [
+          {
+            "node": "Log Failure to Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Failure to Sheet": {
+      "main": [
+        [
+          {
+            "node": "Escalate to Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run Retry Demo": {
+      "main": [
+        [
+          {
+            "node": "Call Unreliable API",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Unreliable API": {
+      "main": [
+        [
+          {
+            "node": "Reset Attempt Counter",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Count Attempt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Count Attempt": {
+      "main": [
+        [
+          {
+            "node": "Retry Budget Left?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Retry Budget Left?": {
+      "main": [
+        [
+          {
+            "node": "Wait 1 Minute",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Give Up and Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait 1 Minute": {
+      "main": [
+        [
+          {
+            "node": "Call Unreliable API",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true
+  },
+  "pinData": {},
+  "tags": []
+}
