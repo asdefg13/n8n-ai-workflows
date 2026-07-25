@@ -1,0 +1,329 @@
+{
+  "name": "03 · RSS → GPT → Post Draft (human approval)",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## 03 · RSS → GPT → post draft\n**Schedule → RSS → dedupe → GPT draft → Sheets + Telegram approval**\n\nDeduplication uses `$getWorkflowStaticData`, so restarting the workflow\ndoes not re-post old articles. Max 3 drafts per run keeps the cost flat.\n\nNothing is published automatically: the draft goes to Telegram for review.",
+        "height": 280,
+        "width": 560,
+        "color": 7
+      },
+      "id": "00000003-0000-4000-8000-000000000000",
+      "name": "Overview",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -280,
+        -220
+      ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 3
+            }
+          ]
+        }
+      },
+      "id": "00000003-0000-4000-8000-000000000001",
+      "name": "Every 3 Hours",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -260,
+        140
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://openai.com/blog/rss.xml",
+        "options": {
+          "ignoreSSL": false
+        }
+      },
+      "id": "00000003-0000-4000-8000-000000000002",
+      "name": "Read RSS Feed",
+      "type": "n8n-nodes-base.rssFeedRead",
+      "typeVersion": 1.1,
+      "position": [
+        -40,
+        140
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "jsCode": "// Workflow static data survives between executions, so the same article is\n// never drafted twice. Keep the seen-list bounded or it grows forever.\nconst state = $getWorkflowStaticData('global');\nstate.seen = Array.isArray(state.seen) ? state.seen : [];\n\nconst seen = new Set(state.seen);\nconst fresh = [];\n\nfor (const item of $input.all()) {\n  const guid = item.json.guid ?? item.json.link;\n  if (!guid || seen.has(guid)) continue;\n\n  seen.add(guid);\n  fresh.push({\n    json: {\n      guid,\n      title: item.json.title ?? '',\n      link: item.json.link ?? '',\n      published_at: item.json.isoDate ?? item.json.pubDate ?? new Date().toISOString(),\n      excerpt: String(item.json.contentSnippet ?? item.json.content ?? '').slice(0, 3000),\n    },\n  });\n\n  if (fresh.length >= 3) break; // cap the per-run cost\n}\n\nstate.seen = Array.from(seen).slice(-500);\nreturn fresh;"
+      },
+      "id": "00000003-0000-4000-8000-000000000003",
+      "name": "Filter New Articles",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        180,
+        140
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"gpt-4o-mini\",\n  \"temperature\": 0.6,\n  \"response_format\": { \"type\": \"json_object\" },\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You ghost-write LinkedIn posts for an AI engineer. Reply with JSON only, using exactly these keys: hook (one scroll-stopping sentence, no emoji), body (120-180 words, first person, concrete, no buzzwords, no hashtags inside), takeaway (one actionable sentence), hashtags (array of 3-5 lowercase tags without the # sign), skip (true when the article is not worth posting about). Never invent statistics that are not in the source.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": {{ JSON.stringify(`Title: ${$json.title}\\nLink: ${$json.link}\\n\\n${$json.excerpt}`) }}\n    }\n  ]\n}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "00000003-0000-4000-8000-000000000004",
+      "name": "Draft Post",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        400,
+        140
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "OpenAI Header Auth"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Paired-item lookup, with a positional fallback if the pairing is lost.\nlet article = {};\ntry {\n  article = $('Filter New Articles').item.json;\n} catch (error) {\n  article = $('Filter New Articles').all()[$itemIndex]?.json ?? {};\n}\n\nconst raw = $json.choices?.[0]?.message?.content ?? '{}';\n\nlet draft;\ntry {\n  draft = JSON.parse(raw);\n} catch (error) {\n  draft = { skip: true, hook: '', body: String(raw).slice(0, 500), takeaway: '', hashtags: [] };\n}\n\nconst hashtags = Array.isArray(draft.hashtags) ? draft.hashtags : [];\nconst post = [draft.hook, '', draft.body, '', draft.takeaway, '', hashtags.map((t) => `#${t}`).join(' ')]\n  .join('\\n')\n  .trim();\n\nreturn {\n  json: {\n    ...article,\n    skip: Boolean(draft.skip),\n    post,\n    hook: draft.hook ?? '',\n    hashtags: hashtags.join(', '),\n    drafted_at: new Date().toISOString(),\n  },\n};"
+      },
+      "id": "00000003-0000-4000-8000-000000000005",
+      "name": "Format Draft",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        620,
+        140
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.skip }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "false",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "00000003-0000-4000-8000-000000000006",
+      "name": "Worth Posting?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        840,
+        140
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "REPLACE_WITH_GOOGLE_SHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Content Drafts",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Drafted At": "={{ $json.drafted_at }}",
+            "Source Title": "={{ $json.title }}",
+            "Source Link": "={{ $json.link }}",
+            "Published At": "={{ $json.published_at }}",
+            "Hook": "={{ $json.hook }}",
+            "Post": "={{ $json.post }}",
+            "Hashtags": "={{ $json.hashtags }}",
+            "Status": "draft"
+          },
+          "matchingColumns": [],
+          "schema": []
+        },
+        "options": {}
+      },
+      "id": "00000003-0000-4000-8000-000000000007",
+      "name": "Save Draft to Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        1080,
+        40
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "Google Sheets account"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "chatId": "REPLACE_WITH_TELEGRAM_CHAT_ID",
+        "text": "=📝 <b>New post draft</b>\n\n{{ $json.post }}\n\n———\nSource: {{ $json.title }}\n{{ $json.link }}",
+        "additionalFields": {
+          "parse_mode": "HTML",
+          "disable_web_page_preview": true
+        }
+      },
+      "id": "00000003-0000-4000-8000-000000000008",
+      "name": "Send Draft for Review",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1300,
+        40
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "Telegram account"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {},
+      "id": "00000003-0000-4000-8000-000000000009",
+      "name": "Skipped",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1080,
+        260
+      ]
+    }
+  ],
+  "connections": {
+    "Every 3 Hours": {
+      "main": [
+        [
+          {
+            "node": "Read RSS Feed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read RSS Feed": {
+      "main": [
+        [
+          {
+            "node": "Filter New Articles",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter New Articles": {
+      "main": [
+        [
+          {
+            "node": "Draft Post",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Draft Post": {
+      "main": [
+        [
+          {
+            "node": "Format Draft",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Draft": {
+      "main": [
+        [
+          {
+            "node": "Worth Posting?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Worth Posting?": {
+      "main": [
+        [
+          {
+            "node": "Save Draft to Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Skipped",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Draft to Sheet": {
+      "main": [
+        [
+          {
+            "node": "Send Draft for Review",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true
+  },
+  "pinData": {},
+  "tags": []
+}
