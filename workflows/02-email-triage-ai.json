@@ -1,0 +1,402 @@
+{
+  "name": "02 · AI Email Triage → Draft, Alert or Archive",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## 02 · AI email triage\n**Gmail trigger → GPT analysis → route by category**\n\n`urgent` pings Telegram · `needs_reply` creates a Gmail draft ·\n`fyi` and `noise` are logged only. Everything lands in one sheet.\n\nThe model never sends mail — it only drafts. A human presses send.",
+        "height": 280,
+        "width": 520,
+        "color": 7
+      },
+      "id": "00000002-0000-4000-8000-000000000000",
+      "name": "Overview",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -260,
+        -220
+      ]
+    },
+    {
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyMinute"
+            }
+          ]
+        },
+        "simple": false,
+        "filters": {
+          "labelIds": [
+            "INBOX"
+          ],
+          "readStatus": "unread"
+        },
+        "options": {}
+      },
+      "id": "00000002-0000-4000-8000-000000000001",
+      "name": "Gmail Trigger",
+      "type": "n8n-nodes-base.gmailTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -240,
+        140
+      ],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Gmail returns a lot of metadata; keep only what the model needs and cap the\n// body so a 40-page thread cannot blow up the token bill.\nconst item = $json;\n\nreturn {\n  json: {\n    message_id: item.id ?? '',\n    thread_id: item.threadId ?? '',\n    from: item.From ?? item.from ?? '',\n    subject: item.Subject ?? item.subject ?? '(no subject)',\n    body: String(item.text ?? item.snippet ?? '').slice(0, 6000),\n    received_at: item.date ?? new Date().toISOString(),\n  },\n};"
+      },
+      "id": "00000002-0000-4000-8000-000000000002",
+      "name": "Extract Email Fields",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -20,
+        140
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"gpt-4o-mini\",\n  \"temperature\": 0,\n  \"response_format\": { \"type\": \"json_object\" },\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You triage a freelancer's inbox. Reply with JSON only, using exactly these keys: category (urgent|needs_reply|fyi|noise), topic (max 60 characters), summary (max 240 characters, English), sentiment (positive|neutral|negative), suggested_reply (a complete draft reply in the sender's language, empty string when category is fyi or noise), confidence (0-1). category=urgent means money, a production outage or a hard deadline within 24 hours. Newsletters, receipts and automated notifications are noise.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": {{ JSON.stringify(`From: ${$json.from}\\nSubject: ${$json.subject}\\n\\n${$json.body}`) }}\n    }\n  ]\n}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "00000002-0000-4000-8000-000000000003",
+      "name": "Analyse Email",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        200,
+        140
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "OpenAI Header Auth"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "jsCode": "const email = $('Extract Email Fields').first().json;\nconst raw = $json.choices?.[0]?.message?.content ?? '{}';\n\nlet parsed;\ntry {\n  parsed = JSON.parse(raw);\n} catch (error) {\n  // Unparseable output is routed to needs_reply so a human always sees it.\n  parsed = { category: 'needs_reply', topic: 'unclassified', summary: String(raw).slice(0, 240) };\n}\n\nconst allowed = ['urgent', 'needs_reply', 'fyi', 'noise'];\nconst category = String(parsed.category ?? '').toLowerCase();\n\nreturn [\n  {\n    json: {\n      ...email,\n      category: allowed.includes(category) ? category : 'needs_reply',\n      topic: parsed.topic ?? '',\n      summary: parsed.summary ?? '',\n      sentiment: parsed.sentiment ?? 'neutral',\n      suggested_reply: parsed.suggested_reply ?? '',\n      confidence: Number(parsed.confidence ?? 0),\n      triaged_at: new Date().toISOString(),\n    },\n  },\n];"
+      },
+      "id": "00000002-0000-4000-8000-000000000004",
+      "name": "Parse Analysis",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        420,
+        140
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "loose",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "r1",
+                    "leftValue": "={{ $json.category }}",
+                    "rightValue": "urgent",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "urgent"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "loose",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "r2",
+                    "leftValue": "={{ $json.category }}",
+                    "rightValue": "needs_reply",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "needs_reply"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra",
+          "renameFallbackOutput": "low_priority"
+        }
+      },
+      "id": "00000002-0000-4000-8000-000000000005",
+      "name": "Route by Category",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        640,
+        140
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "REPLACE_WITH_TELEGRAM_CHAT_ID",
+        "text": "=🚨 <b>Urgent email</b>\n\n<b>From:</b> {{ $json.from }}\n<b>Subject:</b> {{ $json.subject }}\n<b>Topic:</b> {{ $json.topic }}\n\n{{ $json.summary }}",
+        "additionalFields": {
+          "parse_mode": "HTML"
+        }
+      },
+      "id": "00000002-0000-4000-8000-000000000006",
+      "name": "Alert on Telegram",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        900,
+        -40
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "Telegram account"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "resource": "draft",
+        "subject": "=Re: {{ $json.subject }}",
+        "emailType": "text",
+        "message": "={{ $json.suggested_reply }}",
+        "options": {
+          "sendTo": "={{ $json.from }}",
+          "threadId": "={{ $json.thread_id }}"
+        }
+      },
+      "id": "00000002-0000-4000-8000-000000000007",
+      "name": "Create Gmail Draft",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        900,
+        140
+      ],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "Gmail account"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {},
+      "id": "00000002-0000-4000-8000-000000000008",
+      "name": "Low Priority",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        900,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "REPLACE_WITH_GOOGLE_SHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Inbox Triage",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Triaged At": "={{ $json.triaged_at }}",
+            "From": "={{ $json.from }}",
+            "Subject": "={{ $json.subject }}",
+            "Category": "={{ $json.category }}",
+            "Topic": "={{ $json.topic }}",
+            "Sentiment": "={{ $json.sentiment }}",
+            "Summary": "={{ $json.summary }}",
+            "Confidence": "={{ $json.confidence }}",
+            "Message ID": "={{ $json.message_id }}"
+          },
+          "matchingColumns": [],
+          "schema": []
+        },
+        "options": {}
+      },
+      "id": "00000002-0000-4000-8000-000000000009",
+      "name": "Log Triage Result",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        1160,
+        140
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "Google Sheets account"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    }
+  ],
+  "connections": {
+    "Gmail Trigger": {
+      "main": [
+        [
+          {
+            "node": "Extract Email Fields",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Email Fields": {
+      "main": [
+        [
+          {
+            "node": "Analyse Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Analyse Email": {
+      "main": [
+        [
+          {
+            "node": "Parse Analysis",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Analysis": {
+      "main": [
+        [
+          {
+            "node": "Route by Category",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route by Category": {
+      "main": [
+        [
+          {
+            "node": "Alert on Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Create Gmail Draft",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Low Priority",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Alert on Telegram": {
+      "main": [
+        [
+          {
+            "node": "Log Triage Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Gmail Draft": {
+      "main": [
+        [
+          {
+            "node": "Log Triage Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Low Priority": {
+      "main": [
+        [
+          {
+            "node": "Log Triage Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true
+  },
+  "pinData": {},
+  "tags": []
+}
