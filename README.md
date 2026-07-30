@@ -1,6 +1,6 @@
 # n8n AI Workflows
 
-[![Validate workflows](https://github.com/asdefg13/n8n-ai-workflows/actions/workflows/validate.yml/badge.svg)](https://github.com/asdefg13/n8n-ai-workflows/actions/workflows/validate.yml)
+[![Validate workflows](https://github.com/wanderfool95/n8n-ai-workflows/actions/workflows/validate.yml/badge.svg)](https://github.com/wanderfool95/n8n-ai-workflows/actions/workflows/validate.yml)
 [![n8n](https://img.shields.io/badge/n8n-1.x-EA4B71?logo=n8n&logoColor=white)](https://n8n.io/)
 [![OpenAI](https://img.shields.io/badge/OpenAI-gpt--4o--mini-412991?logo=openai&logoColor=white)](https://platform.openai.com/)
 [![Google Sheets](https://img.shields.io/badge/Google%20Sheets-API-34A853?logo=googlesheets&logoColor=white)](https://developers.google.com/sheets)
@@ -315,7 +315,7 @@ pipelines. Python / FastAPI / aiogram / OpenAI / Claude / Supabase / n8n.
 
 **[→ Hire me on Upwork](https://www.upwork.com/freelancers/~01c8a4f2b80b03bae6)**
 
-See also: **[telegram-ai-assistant-starter](https://github.com/asdefg13/telegram-ai-assistant-starter)** —
+See also: **[telegram-ai-assistant-starter](https://github.com/wanderfool95/telegram-ai-assistant-starter)** —
 a production-shaped Telegram AI assistant in Python.
 
 ---
